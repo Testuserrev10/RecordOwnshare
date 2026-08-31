@@ -36,6 +36,16 @@ export async function pickDirectory() {
   return handle;
 }
 
+export async function ensureDirectoryWritePermission(handle: FileSystemDirectoryHandle) {
+  const permission = await handle.queryPermission({ mode: "readwrite" });
+  if (permission === "granted") return;
+  if (permission === "prompt") {
+    const requested = await handle.requestPermission({ mode: "readwrite" });
+    if (requested === "granted") return;
+  }
+  throw new Error("Local folder write permission was not granted.");
+}
+
 export async function writeRecording(blob: Blob, fileName: string, handle: FileSystemDirectoryHandle) {
   const file = await handle.getFileHandle(fileName, { create: true });
   const writable = await file.createWritable();

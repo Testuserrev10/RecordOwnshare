@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "start": "npm run dev -- --hostname 0.0.0.0 --port 4173",
+  "start": "NEXT_PUBLIC_GOOGLE_CLIENT_ID=218778462567-eku8ns0ccvejtmhcudlt79eacctaeari.apps.googleusercontent.com npm run dev -- --hostname 0.0.0.0 --port 4173",
   "port": 4173,
   "install": [
     {
@@ -8,6 +8,12 @@
       "check": "test -d node_modules",
       "run": "npm install",
       "inputs": ["package.json", "package-lock.json"]
+    },
+    {
+      "name": "SQLite schema",
+      "check": "node -e \"const db=require('better-sqlite3')('dev.db'); process.exit(db.prepare('select 1 from sqlite_master where type=\\\"table\\\" and name=\\\"users\\\"').get() ? 0 : 1)\"",
+      "run": "npm run db:migrate",
+      "inputs": ["drizzle/0000_aspiring_wasp.sql", "drizzle/0001_careless_jamie_braddock.sql"]
     }
   ]
 }

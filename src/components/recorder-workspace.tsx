@@ -24,7 +24,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { uploadToDrive, requestDriveToken } from "@/lib/google-drive";
-import { getDirectoryHandle, getMimeType, pickDirectory, saveDirectoryHandle, supportsLocalRecording, writeRecording } from "@/lib/recording";
+import { ensureDirectoryWritePermission, getDirectoryHandle, getMimeType, pickDirectory, saveDirectoryHandle, supportsLocalRecording, writeRecording } from "@/lib/recording";
 
 type Recording = {
   id: string;
@@ -183,6 +183,7 @@ export function RecorderWorkspace({ email, initialStorage, initialProvider, init
     setStatus(provider === "google_drive" ? "Connect Google Drive in the popup, then choose what to record." : "Choose a screen, window, or tab in the browser prompt.");
     try {
       let driveAccessToken: string | null = null;
+      if (provider === "local") await ensureDirectoryWritePermission(handle!);
       if (provider === "google_drive") driveAccessToken = await requestDriveToken(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!);
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       setStarting(false);
