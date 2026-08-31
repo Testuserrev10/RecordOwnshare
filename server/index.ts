@@ -43,6 +43,15 @@ function sessionCookie(reply: { setCookie: Function }, userId: string) {
 }
 
 app.get('/api/v1/health', async () => ({ ok: true }))
+app.get('/api/v1/auth/session', async (request, reply) => {
+  const userId = sessionUser(request)
+  if (!userId) return reply.code(401).send({ error: { code: 'UNAUTHENTICATED', message: 'No active session.' } })
+  const user = sqlite.prepare('SELECT username, email FROM users WHERE id = ?').get(userId) as { username: string; email: string } | undefined
+  if (!user) return reply.code(401).send({ error: { code: 'UNAUTHENTICATED', message: 'No active session.' } })
+  return { user }
+})
+
+
 app.post('/api/v1/auth/signup', async (request, reply) => {
   const parsed = authBody.safeParse(request.body)
   if (!parsed.success || !parsed.data.email) return reply.code(400).send({ error: { code: 'INVALID_ACCOUNT', message: 'Enter a username, email, and password.' } })

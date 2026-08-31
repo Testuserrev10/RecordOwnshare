@@ -5,242 +5,150 @@ import {
   Check,
   ChevronDown,
   CircleHelp,
-  Cloud,
   Copy,
   FolderOpen,
   HardDrive,
-  LockKeyhole,
   LogOut,
   Menu,
   MoreHorizontal,
   Pause,
   Play,
-  Plus,
   Search,
   Settings,
   ShieldCheck,
   Square,
   Tag,
-  UserRound,
   Video,
-  X,
 } from 'lucide-react'
 import './App.css'
 
-type View = 'overview' | 'recordings' | 'storage' | 'settings'
-type Destination = 'local' | 'drive'
-type Recording = {
-  id: string
-  title: string
-  duration: string
-  date: string
-  destination: Destination
-  path: string
-  tag: string
-  color: string
-}
+type Recording = { id: string; title: string; durationMs: number; provider: string; storagePath: string; captureSource: string; createdAt: string }
+type DirectoryHandle = FileSystemDirectoryHandle & { queryPermission: (options: { mode: 'readwrite' }) => Promise<PermissionState>; requestPermission: (options: { mode: 'readwrite' }) => Promise<PermissionState> }
 
-const initialRecordings: Recording[] = [
-  {
-    id: '1',
-    title: 'Checkout flow — payment retry',
-    duration: '02:14',
-    date: 'Today, 10:42 AM',
-    destination: 'local',
-    path: 'Capture recordings / Product QA',
-    tag: 'QA review',
-    color: 'coral',
-  },
-  {
-    id: '2',
-    title: 'Onboarding walkthrough',
-    duration: '05:38',
-    date: 'Yesterday, 4:18 PM',
-    destination: 'drive',
-    path: 'My Drive / Capture / Demos',
-    tag: 'Demo',
-    color: 'blue',
-  },
-  {
-    id: '3',
-    title: 'Header interaction notes',
-    duration: '01:07',
-    date: 'Mon, 9:06 AM',
-    destination: 'local',
-    path: 'Capture recordings / Design',
-    tag: 'Design',
-    color: 'violet',
-  },
-]
+type View = 'record' | 'recordings' | 'storage' | 'settings'
+
+const api = async (path: string, options: RequestInit = {}) => fetch(path, { ...options, credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } })
 
 function App() {
-  const [view, setView] = useState<View>('overview')
-  const [destination, setDestination] = useState<Destination>('local')
-  const [recordings, setRecordings] = useState(initialRecordings)
+  const [user, setUser] = useState<{ username: string; email: string } | null>(null)
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
+  const [recordings, setRecordings] = useState<Recording[]>([])
+  const [view, setView] = useState<View>('record')
+  const [directory, setDirectory] = useState<DirectoryHandle | null>(null)
+  const [folderLabel, setFolderLabel] = useState('No folder selected')
   const [isRecording, setIsRecording] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [seconds, setSeconds] = useState(0)
-  const [showDestinationMenu, setShowDestinationMenu] = useState(false)
-  const [showProfileMenu, setShowProfileMenu] = useState(false)
-  const [showToast, setShowToast] = useState('')
-  const [search, setSearch] = useState('')
-  const [mobileNav, setMobileNav] = useState(false)
-  const timerRef = useRef<number | undefined>(undefined)
+  const [pendingBlob, setPendingBlob] = useState<Blob | null>(null)
+  const [pendingSource, setPendingSource] = useState('screen')
+  const [filename, setFilename] = useState('Capture recording')
+  const [query, setQuery] = useState('')
+  const [message, setMessage] = useState('')
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const chunksRef = useRef<Blob[]>([])
 
   useEffect(() => {
-    if (isRecording && !isPaused) {
-      timerRef.current = window.setInterval(() => setSeconds((value) => value + 1), 1000)
-    }
-    return () => window.clearInterval(timerRef.current)
+    api('/api/v1/auth/session').then(async (response) => { if (response.ok) setUser((await response.json()).user) }).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    if (!user) return
+    api('/api/v1/recordings').then(async (response) => { if (response.ok) setRecordings((await response.json()).recordings) }).catch(() => undefined)
+  }, [user])
+
+  useEffect(() => {
+    if (!isRecording || isPaused) return
+    const timer = window.setInterval(() => setSeconds((value) => value + 1), 1000)
+    return () => window.clearInterval(timer)
   }, [isPaused, isRecording])
 
-  const filteredRecordings = useMemo(
-    () => recordings.filter((recording) => recording.title.toLowerCase().includes(search.toLowerCase())),
-    [recordings, search],
-  )
+  const filteredRecordings = useMemo(() => recordings.filter((recording) => recording.title.toLowerCase().includes(query.toLowerCase())), [query, recordings])
+  const notify = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(''), 3000) }
 
-  function notify(message: string) {
-    setShowToast(message)
-    window.setTimeout(() => setShowToast(''), 2600)
+  async function chooseFolder() {
+    if (!('showDirectoryPicker' in window)) { notify('Local folders require Chrome desktop. Downloads are the fallback in other browsers.'); return }
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' }) as DirectoryHandle
+      const permission = await handle.requestPermission({ mode: 'readwrite' })
+      if (permission !== 'granted') { notify('Folder permission was not granted.'); return }
+      setDirectory(handle)
+      setFolderLabel(handle.name)
+      notify(`Recordings will be saved in ${handle.name}.`)
+    } catch { notify('Folder selection was cancelled.') }
   }
 
-  function startRecording() {
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      notify('Screen recording is not supported in this browser.')
-      return
-    }
-    setSeconds(0)
-    setIsRecording(true)
-    setIsPaused(false)
-    notify('Choose a screen, window, or browser tab to begin.')
-    navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).then((stream) => {
-      stream.getVideoTracks()[0]?.addEventListener('ended', () => stopRecording())
-    }).catch(() => {
-      setIsRecording(false)
-      notify('Screen permission was cancelled. Nothing was saved.')
-    })
+  async function startRecording() {
+    if (!directory) { notify('Choose a local folder before recording.'); return }
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm'
+      const recorder = new MediaRecorder(stream, { mimeType })
+      chunksRef.current = []
+      recorder.ondataavailable = (event) => { if (event.data.size > 0) chunksRef.current.push(event.data) }
+      recorder.onstop = () => { setPendingBlob(new Blob(chunksRef.current, { type: mimeType })); setPendingSource('screen'); stream.getTracks().forEach((track) => track.stop()) }
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => { if (recorder.state !== 'inactive') recorder.stop(); setIsRecording(false) })
+      recorder.start(1000)
+      recorderRef.current = recorder
+      streamRef.current = stream
+      setIsRecording(true)
+      setIsPaused(false)
+      setSeconds(0)
+      notify('Recording started.')
+    } catch { notify('Screen permission was cancelled. Nothing was saved.') }
+  }
+
+  function togglePause() {
+    const recorder = recorderRef.current
+    if (!recorder) return
+    if (recorder.state === 'recording') { recorder.pause(); setIsPaused(true) } else if (recorder.state === 'paused') { recorder.resume(); setIsPaused(false) }
   }
 
   function stopRecording() {
+    if (!recorderRef.current) return
+    recorderRef.current.stop()
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    recorderRef.current = null
     setIsRecording(false)
     setIsPaused(false)
-    if (seconds > 0) {
-      const newRecording: Recording = {
-        id: String(Date.now()),
-        title: 'Untitled recording',
-        duration: formatTime(seconds),
-        date: 'Just now',
-        destination,
-        path: destination === 'local' ? 'Capture recordings / New recording' : 'My Drive / Capture',
-        tag: 'Unsorted',
-        color: 'amber',
-      }
-      setRecordings((current) => [newRecording, ...current])
-      notify(`Recording saved to ${destination === 'local' ? 'your folder' : 'Google Drive'}.`)
+  }
+
+  async function saveRecording() {
+    if (!pendingBlob || !directory) return
+    const cleanName = filename.trim().replace(/[\\/:*?"<>|]/g, '-') || 'Capture recording'
+    const fileName = `${cleanName}.webm`
+    try {
+      const permission = await directory.requestPermission({ mode: 'readwrite' })
+      if (permission !== 'granted') throw new Error('permission')
+      const fileHandle = await directory.getFileHandle(fileName, { create: true })
+      const writable = await fileHandle.createWritable()
+      await writable.write(pendingBlob)
+      await writable.close()
+      const response = await api('/api/v1/recordings', { method: 'POST', body: JSON.stringify({ title: cleanName, durationMs: seconds * 1000, provider: 'local', storagePath: `${folderLabel} / ${fileName}`, captureSource: pendingSource }) })
+      if (!response.ok) throw new Error('metadata')
+      const refreshed = await api('/api/v1/recordings')
+      if (refreshed.ok) setRecordings((await refreshed.json()).recordings)
+      setPendingBlob(null)
+      setFilename('Capture recording')
+      setSeconds(0)
       setView('recordings')
-    }
-    setSeconds(0)
+      notify(`${fileName} saved to ${folderLabel}.`)
+    } catch { notify('The video could not be saved. Your recording is still available to retry.') }
   }
 
-  function formatTime(value: number) {
-    return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`
-  }
+  async function signOut() { await api('/api/v1/auth/logout', { method: 'POST' }); setUser(null); setRecordings([]) }
 
-  function copyPath(path: string) {
-    navigator.clipboard?.writeText(path)
-    notify('Location copied to clipboard.')
-  }
-
-  function deleteRecording(id: string) {
-    setRecordings((current) => current.filter((recording) => recording.id !== id))
-    notify('Recording metadata removed.')
-  }
-
-  return (
-    <div className="app-shell">
-      <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}>
-        <div className="brand-row">
-          <div className="brand-mark"><Video size={17} strokeWidth={2.5} /></div>
-          <span>capture</span>
-          <button className="icon-button sidebar-close" onClick={() => setMobileNav(false)} aria-label="Close menu"><X size={18} /></button>
-        </div>
-        <div className="privacy-chip"><ShieldCheck size={14} /><span>Private by default</span></div>
-        <nav className="main-nav" aria-label="Main navigation">
-          <p className="nav-label">Workspace</p>
-          <NavItem icon={<Video size={17} />} label="Record" active={view === 'overview'} onClick={() => { setView('overview'); setMobileNav(false) }} />
-          <NavItem icon={<Archive size={17} />} label="Recordings" active={view === 'recordings'} count={recordings.length} onClick={() => { setView('recordings'); setMobileNav(false) }} />
-          <NavItem icon={<HardDrive size={17} />} label="Storage" active={view === 'storage'} onClick={() => { setView('storage'); setMobileNav(false) }} />
-          <p className="nav-label nav-label-spaced">Manage</p>
-          <NavItem icon={<Settings size={17} />} label="Settings" active={view === 'settings'} onClick={() => { setView('settings'); setMobileNav(false) }} />
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="help-row"><CircleHelp size={16} /><span>How Capture works</span><ArrowRight size={14} /></div>
-          <div className="user-card" onClick={() => setShowProfileMenu((value) => !value)} role="button" tabIndex={0}>
-            <div className="avatar">AM</div><div className="user-meta"><strong>Alex Morgan</strong><span>Personal space</span></div><MoreHorizontal size={17} />
-          </div>
-          {showProfileMenu && <div className="profile-popover"><button><UserRound size={15} /> Profile</button><button><LogOut size={15} /> Sign out</button></div>}
-        </div>
-      </aside>
-
-      <main className="main-content">
-        <header className="topbar">
-          <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="Open menu"><Menu size={20} /></button>
-          <div className="breadcrumb"><span>Personal space</span><ChevronDown size={14} /></div>
-          <div className="topbar-actions"><button className="icon-button" aria-label="Help"><CircleHelp size={18} /></button><div className="top-avatar">AM</div></div>
-        </header>
-        <div className="page-wrap">
-          {view === 'overview' && <Overview destination={destination} setDestination={setDestination} showDestinationMenu={showDestinationMenu} setShowDestinationMenu={setShowDestinationMenu} isRecording={isRecording} isPaused={isPaused} seconds={seconds} startRecording={startRecording} stopRecording={stopRecording} setIsPaused={setIsPaused} recordings={recordings} setView={setView} />}
-          {view === 'recordings' && <Recordings recordings={filteredRecordings} search={search} setSearch={setSearch} copyPath={copyPath} deleteRecording={deleteRecording} />}
-          {view === 'storage' && <Storage destination={destination} setDestination={setDestination} notify={notify} />}
-          {view === 'settings' && <SettingsView notify={notify} />}
-        </div>
-      </main>
-      {showToast && <div className="toast"><Check size={16} /> {showToast}</div>}
-    </div>
-  )
+  if (!user) return <AuthScreen mode={authMode} setMode={setAuthMode} onAuthenticated={setUser} />
+  return <div className="app-shell"><aside className="sidebar"><div className="brand-row"><div className="brand-mark"><Video size={17} /></div><span>capture</span></div><div className="privacy-chip"><ShieldCheck size={14} /> Private by default</div><nav className="main-nav"><p className="nav-label">Workspace</p><NavItem icon={<Video size={17} />} label="Record" active={view === 'record'} onClick={() => setView('record')} /><NavItem icon={<Archive size={17} />} label="Recordings" count={recordings.length} active={view === 'recordings'} onClick={() => setView('recordings')} /><NavItem icon={<HardDrive size={17} />} label="Storage" active={view === 'storage'} onClick={() => setView('storage')} /><p className="nav-label nav-label-spaced">Manage</p><NavItem icon={<Settings size={17} />} label="Settings" active={view === 'settings'} onClick={() => setView('settings')} /></nav><div className="sidebar-bottom"><div className="help-row"><CircleHelp size={16} /><span>How Capture works</span><ArrowRight size={14} /></div><button className="user-card" onClick={signOut}><span className="avatar">{user.username.slice(0, 2).toUpperCase()}</span><span className="user-meta"><strong>{user.username}</strong><small>{user.email}</small></span><LogOut size={15} /></button></div></aside><main className="main-content"><header className="topbar"><button className="icon-button mobile-menu" aria-label="Open navigation"><Menu size={20} /></button><span className="breadcrumb">Personal space <ChevronDown size={14} /></span><div className="topbar-actions"><CircleHelp size={18} /><span className="top-avatar">{user.username.slice(0, 2).toUpperCase()}</span></div></header><div className="page-wrap">{view === 'record' && <RecordView folderLabel={folderLabel} hasFolder={Boolean(directory)} chooseFolder={chooseFolder} isRecording={isRecording} isPaused={isPaused} seconds={seconds} startRecording={startRecording} stopRecording={stopRecording} togglePause={togglePause} pendingBlob={pendingBlob} filename={filename} setFilename={setFilename} saveRecording={saveRecording} />}{view === 'recordings' && <RecordingsView recordings={filteredRecordings} query={query} setQuery={setQuery} copyPath={(path) => { navigator.clipboard?.writeText(path); notify('Location copied.') }} />}{view === 'storage' && <StorageView folderLabel={folderLabel} chooseFolder={chooseFolder} hasFolder={Boolean(directory)} />}{view === 'settings' && <SettingsView user={user} />}</div></main>{message && <div className="toast"><Check size={16} /> {message}</div>}</div>
 }
 
-function NavItem({ icon, label, active, count, onClick }: { icon: React.ReactNode; label: string; active: boolean; count?: number; onClick: () => void }) {
-  return <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && <em>{count}</em>}</button>
-}
+function AuthScreen({ mode, setMode, onAuthenticated }: { mode: 'login' | 'signup'; setMode: (mode: 'login' | 'signup') => void; onAuthenticated: (user: { username: string; email: string }) => void }) { const [error, setError] = useState(''); const [busy, setBusy] = useState(false); async function submit(event: React.FormEvent<HTMLFormElement>) { event.preventDefault(); setBusy(true); setError(''); const form = new FormData(event.currentTarget); const response = await api(`/api/v1/auth/${mode === 'signup' ? 'signup' : 'login'}`, { method: 'POST', body: JSON.stringify({ username: form.get('username'), email: form.get('email') || undefined, password: form.get('password') }) }); const data = await response.json(); setBusy(false); if (!response.ok) { setError(data.error?.message || 'Unable to continue.'); return } onAuthenticated(data.user) } return <main className="auth-screen"><div className="auth-brand"><div className="brand-mark"><Video size={17} /></div><span>capture</span></div><div className="auth-card"><div className="auth-intro"><p className="eyebrow">Private by default</p><h1>{mode === 'login' ? 'Welcome back.' : 'Create your account.'}</h1><p>{mode === 'login' ? 'Your recordings stay in the places you choose.' : 'A private home for the screen recordings you own.'}</p></div><form className="auth-form" onSubmit={submit}><label>Username<input name="username" required minLength={3} autoComplete="username" placeholder="alex" /></label>{mode === 'signup' && <label>Email<input name="email" type="email" required autoComplete="email" placeholder="alex@company.com" /></label>}<label>Password<input name="password" type="password" required minLength={8} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} placeholder="At least 8 characters" /></label>{error && <p className="form-error">{error}</p>}<button className="primary-submit" disabled={busy}>{busy ? 'Working…' : mode === 'login' ? 'Sign in' : 'Create account'} <ArrowRight size={16} /></button></form><div className="auth-switch">{mode === 'login' ? <><span>New to Capture?</span><button onClick={() => setMode('signup')}>Create an account</button></> : <><span>Already have an account?</span><button onClick={() => setMode('login')}>Sign in</button></>}</div></div><p className="auth-footer"><ShieldCheck size={14} /> Your videos never pass through Capture servers.</p></main> }
 
-function Overview(props: { destination: Destination; setDestination: (value: Destination) => void; showDestinationMenu: boolean; setShowDestinationMenu: (value: boolean) => void; isRecording: boolean; isPaused: boolean; seconds: number; startRecording: () => void; stopRecording: () => void; setIsPaused: (value: boolean) => void; recordings: Recording[]; setView: (view: View) => void }) {
-  const { destination, setDestination, showDestinationMenu, setShowDestinationMenu, isRecording, isPaused, seconds, startRecording, stopRecording, setIsPaused, recordings, setView } = props
-  return <>
-    <div className="page-heading"><div><p className="eyebrow">Thursday, October 24, 2024</p><h1>Good morning, Alex</h1><p className="heading-subtitle">Record something worth remembering.</p></div><button className="secondary-button"><LockKeyhole size={15} /> Your data stays yours</button></div>
-    <section className="record-card">
-      <div className="record-card-copy"><span className="status-dot" /> <span>{isRecording ? (isPaused ? 'Recording paused' : 'Recording in progress') : 'Ready when you are'}</span><h2>{isRecording ? 'Capturing your screen' : 'What will you capture today?'}</h2><p>Everything you record goes directly to your chosen destination. Capture never stores your video.</p></div>
-      <div className="record-actions">
-        <div className="destination-select-wrap"><button className="destination-select" onClick={() => setShowDestinationMenu(!showDestinationMenu)}><span className={`destination-icon ${destination}`} >{destination === 'local' ? <FolderOpen size={15} /> : <Cloud size={15} />}</span><span>{destination === 'local' ? 'Local folder' : 'Google Drive'}</span><ChevronDown size={15} /></button>{showDestinationMenu && <div className="destination-menu"><button onClick={() => { setDestination('local'); setShowDestinationMenu(false) }}><FolderOpen size={16} /><span><strong>Local folder</strong><small>Capture recordings /</small></span>{destination === 'local' && <Check size={15} />}</button><button onClick={() => { setDestination('drive'); setShowDestinationMenu(false) }}><Cloud size={16} /><span><strong>Google Drive</strong><small>My Drive / Capture</small></span>{destination === 'drive' && <Check size={15} />}</button></div>}</div>
-        {!isRecording ? <button className="record-button" onClick={startRecording}><span className="record-button-icon"><Video size={20} fill="currentColor" /></span> Start recording <span className="shortcut">⌘ R</span></button> : <div className="recording-controls"><button className="control-button pause" onClick={() => setIsPaused(!isPaused)}>{isPaused ? <Play size={18} fill="currentColor" /> : <Pause size={18} fill="currentColor" />}<span>{isPaused ? 'Resume' : 'Pause'}</span></button><button className="control-button stop" onClick={stopRecording}><Square size={16} fill="currentColor" /><span>Stop</span></button><strong className="live-timer">{formatTime(seconds)}</strong></div>}
-      </div>
-    </section>
-    <div className="section-header"><div><h3>Recent recordings</h3><p>Your latest captures, saved to your own storage.</p></div><button className="text-button" onClick={() => setView('recordings')}>View all <ArrowRight size={15} /></button></div>
-    <div className="recording-grid">{recordings.slice(0, 3).map((recording) => <RecordingCard key={recording.id} recording={recording} />)}</div>
-    <section className="privacy-banner"><div className="banner-icon"><ShieldCheck size={18} /></div><div><strong>Your recordings never pass through Capture.</strong><p>We only keep the details needed to show you what you saved and where it lives.</p></div><button className="text-button">Learn more <ArrowRight size={15} /></button></section>
-  </>
-}
-
-function RecordingCard({ recording }: { recording: Recording }) {
-  return <article className="recording-card"><div className={`thumbnail ${recording.color}`}><div className="thumbnail-window"><span /><span /><span /><div className="thumbnail-lines" /></div><span className="duration">{recording.duration}</span></div><div className="recording-card-info"><div><h4>{recording.title}</h4><p>{recording.date}</p></div><button className="icon-button" aria-label="More recording actions"><MoreHorizontal size={18} /></button></div><div className="recording-card-meta"><span className={`provider-pill ${recording.destination}`}>{recording.destination === 'local' ? <FolderOpen size={13} /> : <Cloud size={13} />}{recording.destination === 'local' ? 'Local folder' : 'Google Drive'}</span><span className="tag-pill"><Tag size={12} />{recording.tag}</span></div></article>
-}
-
-function Recordings({ recordings, search, setSearch, copyPath, deleteRecording }: { recordings: Recording[]; search: string; setSearch: (value: string) => void; copyPath: (path: string) => void; deleteRecording: (id: string) => void }) {
-  return <><div className="page-heading compact"><div><p className="eyebrow">Library</p><h1>Your recordings</h1><p className="heading-subtitle">A private index of everything you have captured.</p></div><button className="record-button small"><Video size={16} fill="currentColor" /> Start recording</button></div><div className="library-toolbar"><label className="search-field"><Search size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search recordings" /></label><button className="filter-button">All destinations <ChevronDown size={15} /></button><button className="filter-button">Newest first <ChevronDown size={15} /></button></div><div className="library-list">{recordings.length ? recordings.map((recording) => <article className="library-row" key={recording.id}><div className={`thumbnail small-thumb ${recording.color}`}><div className="thumbnail-window"><span /><span /><span /></div><span className="duration">{recording.duration}</span></div><div className="library-main"><h3>{recording.title}</h3><p>{recording.date} · {recording.path}</p><div className="recording-card-meta"><span className={`provider-pill ${recording.destination}`}>{recording.destination === 'local' ? <FolderOpen size={13} /> : <Cloud size={13} />}{recording.destination === 'local' ? 'Local folder' : 'Google Drive'}</span><span className="tag-pill"><Tag size={12} />{recording.tag}</span></div></div><div className="row-actions"><button className="icon-button" onClick={() => copyPath(recording.path)} aria-label="Copy location"><Copy size={16} /></button><button className="icon-button danger-hover" onClick={() => deleteRecording(recording.id)} aria-label="Delete recording metadata"><X size={16} /></button></div></article>) : <div className="empty-state"><Archive size={28} /><h3>No recordings found</h3><p>Try a different search or start a new recording.</p></div>}</div></>
-}
-
-function Storage({ destination, setDestination, notify }: { destination: Destination; setDestination: (value: Destination) => void; notify: (message: string) => void }) {
-  return <><div className="page-heading compact"><div><p className="eyebrow">Preferences</p><h1>Where things go</h1><p className="heading-subtitle">Choose the destination Capture uses after you stop recording.</p></div></div><section className="storage-panel"><div className="panel-heading"><div><h2>Connected destinations</h2><p>Capture writes your video directly to these locations.</p></div><span className="secure-label"><ShieldCheck size={14} /> Encrypted connection</span></div><StorageOption icon={<FolderOpen size={20} />} title="Local folder" description="Capture recordings /" status="Ready on this device" active={destination === 'local'} onClick={() => { setDestination('local'); notify('Local folder is now your default.') }} /><StorageOption icon={<Cloud size={20} />} title="Google Drive" description="My Drive / Capture" status="Connected as alex@northstar.dev" active={destination === 'drive'} onClick={() => { setDestination('drive'); notify('Google Drive is now your default.') }} connected /><button className="add-destination"><Plus size={17} /> Connect another destination <span>Later</span></button></section><section className="privacy-card"><div className="banner-icon"><LockKeyhole size={18} /></div><div><h3>Built for privacy</h3><p>Capture stores only recording details like title, duration, destination and path. Your video stays in the location you choose.</p></div></section></>
-}
-
-function StorageOption({ icon, title, description, status, active, onClick, connected }: { icon: React.ReactNode; title: string; description: string; status: string; active: boolean; onClick: () => void; connected?: boolean }) {
-  return <button className={`storage-option ${active ? 'selected' : ''}`} onClick={onClick}><span className="storage-option-icon">{icon}</span><span className="storage-option-copy"><strong>{title}</strong><small>{description}</small></span><span className="storage-status"><span className="status-dot" />{status}</span>{connected && <span className="connected-badge">Connected</span>}{active && <Check className="selected-check" size={18} />}</button>
-}
-
-function SettingsView({ notify }: { notify: (message: string) => void }) {
-  return <><div className="page-heading compact"><div><p className="eyebrow">Account</p><h1>Settings</h1><p className="heading-subtitle">Small details that make Capture feel like yours.</p></div></div><section className="settings-panel"><div className="settings-section"><div><h2>Profile</h2><p>Your account details.</p></div><div className="settings-fields"><label>Username<input defaultValue="alexmorgan" /></label><label>Email<input defaultValue="alex@northstar.dev" /></label><button className="secondary-button save-settings" onClick={() => notify('Profile changes saved.')}>Save changes</button></div></div><div className="settings-section"><div><h2>Recording defaults</h2><p>Set up your ideal starting point.</p></div><div className="settings-fields"><label className="toggle-row"><span><strong>Microphone</strong><small>Ask before each recording</small></span><span className="toggle on"><span /></span></label><label className="toggle-row"><span><strong>System audio</strong><small>Use when available</small></span><span className="toggle"><span /></span></label></div></div></section></>
-}
-
-function formatTime(value: number) { return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}` }
+function NavItem({ icon, label, active, count, onClick }: { icon: React.ReactNode; label: string; active: boolean; count?: number; onClick: () => void }) { return <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && <em>{count}</em>}</button> }
+function RecordView({ folderLabel, hasFolder, chooseFolder, isRecording, isPaused, seconds, startRecording, stopRecording, togglePause, pendingBlob, filename, setFilename, saveRecording }: { folderLabel: string; hasFolder: boolean; chooseFolder: () => void; isRecording: boolean; isPaused: boolean; seconds: number; startRecording: () => void; stopRecording: () => void; togglePause: () => void; pendingBlob: Blob | null; filename: string; setFilename: (value: string) => void; saveRecording: () => void }) { return <><div className="page-heading"><div><p className="eyebrow">Local-first recording</p><h1>Make your point clear.</h1><p className="heading-subtitle">Record your screen, save it to your own folder, and keep moving.</p></div></div><section className="record-card"><div className="record-card-copy"><span className="status-dot" /> <span>{isRecording ? isPaused ? 'Recording paused' : 'Recording in progress' : 'Ready when you are'}</span><h2>{isRecording ? `Capturing · ${formatTime(seconds)}` : 'What will you capture today?'}</h2><p>{hasFolder ? `Videos will be written directly to ${folderLabel}.` : 'Choose a local folder first. Capture never uploads your video.'}</p></div><div className="record-actions">{!hasFolder && !pendingBlob && <button className="secondary-button" onClick={chooseFolder}><FolderOpen size={16} /> Choose local folder</button>}{hasFolder && !isRecording && !pendingBlob && <button className="record-button" onClick={startRecording}><Video size={18} fill="currentColor" /> Start recording <span className="shortcut">⌘ R</span></button>}{isRecording && <div className="recording-controls"><button className="control-button pause" onClick={togglePause}>{isPaused ? <Play size={17} /> : <Pause size={17} />} {isPaused ? 'Resume' : 'Pause'}</button><button className="control-button stop" onClick={stopRecording}><Square size={15} fill="currentColor" /> Stop</button></div>}</div></section>{pendingBlob && <section className="save-panel"><div><p className="eyebrow">Recording ready</p><h2>Save your WebM file</h2><p>Review the filename before writing it to {folderLabel}.</p></div><div className="save-form"><label>File name<input value={filename} onChange={(event) => setFilename(event.target.value)} autoFocus /><small>.webm will be added automatically</small></label><button className="record-button" onClick={saveRecording}><HardDrive size={16} /> Save to local folder</button></div></section>}<div className="section-header"><div><h3>How local saving works</h3><p>Your browser writes the file directly to the folder you approve.</p></div></div><div className="steps"><div><span>01</span><strong>Choose a folder</strong><p>Capture asks for write permission once.</p></div><div><span>02</span><strong>Record in WebM</strong><p>Video stays in this browser tab.</p></div><div><span>03</span><strong>Save and find it</strong><p>Metadata helps you remember the path.</p></div></div></> }
+function RecordingsView({ recordings, query, setQuery, copyPath }: { recordings: Recording[]; query: string; setQuery: (value: string) => void; copyPath: (path: string) => void }) { return <><div className="page-heading compact"><div><p className="eyebrow">Library</p><h1>Your recordings</h1><p className="heading-subtitle">A private index of files saved to your own storage.</p></div></div><div className="library-toolbar"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search recordings" /></label></div><div className="library-list">{recordings.length ? recordings.map((recording) => <article className="library-row" key={recording.id}><div className="thumbnail small-thumb coral"><div className="thumbnail-window"><span /><span /><span /></div><span className="duration">{formatTime(recording.durationMs / 1000)}</span></div><div className="library-main"><h3>{recording.title}.webm</h3><p>{new Date(recording.createdAt).toLocaleString()} · {recording.storagePath}</p><div className="recording-card-meta"><span className="provider-pill local"><FolderOpen size={13} /> Local folder</span><span className="tag-pill"><Tag size={12} /> WebM</span></div></div><button className="icon-button" onClick={() => copyPath(recording.storagePath)} aria-label="Copy storage path"><Copy size={16} /></button><button className="icon-button" aria-label="More actions"><MoreHorizontal size={17} /></button></article>) : <div className="empty-state"><Archive size={28} /><h3>No recordings yet</h3><p>Choose a folder and make your first capture.</p></div>}</div></> }
+function StorageView({ folderLabel, chooseFolder, hasFolder }: { folderLabel: string; chooseFolder: () => void; hasFolder: boolean }) { return <><div className="page-heading compact"><div><p className="eyebrow">Storage</p><h1>Your local folder</h1><p className="heading-subtitle">Capture writes WebM files directly to your computer.</p></div></div><section className="storage-panel"><div className="panel-heading"><div><h2>Local Folder</h2><p>{hasFolder ? folderLabel : 'No folder selected yet'}</p></div><span className="secure-label"><ShieldCheck size={14} /> Browser permission</span></div><button className="storage-option selected" onClick={chooseFolder}><span className="storage-option-icon"><FolderOpen size={20} /></span><span className="storage-option-copy"><strong>{hasFolder ? 'Change folder' : 'Choose a folder'}</strong><small>Files are saved as .webm recordings</small></span><ArrowRight size={17} /></button></section><section className="privacy-banner"><div className="banner-icon"><ShieldCheck size={18} /></div><div><strong>Capture does not store video files.</strong><p>Only the filename, duration, path label, and save time are kept in your account.</p></div></section></> }
+function SettingsView({ user }: { user: { username: string; email: string } }) { return <><div className="page-heading compact"><div><p className="eyebrow">Account</p><h1>Settings</h1><p className="heading-subtitle">Your Capture account details.</p></div></div><section className="settings-panel"><div className="settings-section"><div><h2>Profile</h2><p>Stored securely in the Capture database.</p></div><div className="settings-fields"><label>Username<input value={user.username} readOnly /></label><label>Email<input value={user.email} readOnly /></label></div></div></section></> }
+function formatTime(seconds: number) { return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` }
 
 export default App
