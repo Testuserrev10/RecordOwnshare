@@ -1,0 +1,74 @@
+revolte:
+  version: '1'
+  project: Record and Share
+  appName: myfreeapp
+  env:
+    preview:
+      services:
+        rid_1:
+          name: web
+          type: WEB_SERVICE
+          entryPoint: node_modules/next/dist/bin/next
+          specifications:
+            cpu: 2
+            memory: 2
+            storage: 30
+          properties:
+            health: /api/health
+            port: 8080
+            loadBalancerMode: shared
+            variables:
+              NODE_ENV: production
+              PORT: '8080'
+              DATABASE_URL: file:./dev.db
+              AUTH_SECRET: '#{AUTH_SECRET}'
+              NEXT_PUBLIC_GOOGLE_CLIENT_ID: '#{NEXT_PUBLIC_GOOGLE_CLIENT_ID}'
+    qa:
+      branch: qa
+      services:
+        rid_1:
+          name: web
+          type: WEB_SERVICE
+          entryPoint: node_modules/next/dist/bin/next
+          specifications:
+            cpu: 2
+            memory: 2
+            storage: 30
+          properties:
+            health: /api/health
+            port: 8080
+            loadBalancerMode: shared
+    staging:
+      branch: staging
+      services:
+        rid_1:
+          name: web
+          type: WEB_SERVICE
+          entryPoint: node_modules/next/dist/bin/next
+          specifications:
+            cpu: 2
+            memory: 2
+            storage: 30
+          properties:
+            health: /api/health
+            port: 8080
+            loadBalancerMode: shared
+    production:
+      branch: main
+      services:
+        rid_1:
+          name: web
+          type: WEB_SERVICE
+          entryPoint: node_modules/next/dist/bin/next
+          specifications:
+            cpu: 2
+            memory: 2
+            storage: 50
+            autoScaling:
+              replica:
+                min: 1
+                max: 3
+          properties:
+            health: /api/health
+            port: 8080
+            loadBalancerMode: shared
